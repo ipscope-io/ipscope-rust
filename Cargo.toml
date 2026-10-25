@@ -1,0 +1,18 @@
+[package]
+name = "ipscope"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Official, memory-safe Sync & Async Rust Server-Side SDK for the IPScope IP Intelligence Platform."
+license = "MIT"
+keywords = ["ip", "geolocation", "asn", "vpn-detection", "ipscope"]
+categories = ["api-bindings", "network-programming", "web-programming::http-client"]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
