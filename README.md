@@ -1,4 +1,4 @@
-# `ipscope` — Official IPScope Server-Side Rust SDK
+# `ipscope` - Official IPScope Server-Side Rust SDK
 
 Official memory-safe (`#![forbid(unsafe_code)]`), strictly typed server-side **Rust SDK** (`ipscope`) for the **IPScope IP Intelligence Platform**, supporting both **Asynchronous (`AsyncIpScopeClient`)** and **Synchronous (`IpScopeClient`)** execution.
 
