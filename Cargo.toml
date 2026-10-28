@@ -5,6 +5,10 @@ edition = "2021"
 rust-version = "1.75"
 description = "Official, memory-safe Sync & Async Rust Server-Side SDK for the IPScope IP Intelligence Platform."
 license = "MIT"
+homepage = "https://ipscope.io"
+documentation = "https://docs.rs/ipscope"
+repository = "https://github.com/ipscope-io/ipscope-rust"
+readme = "README.md"
 keywords = ["ip", "geolocation", "asn", "vpn-detection", "ipscope"]
 categories = ["api-bindings", "network-programming", "web-programming::http-client"]
 
