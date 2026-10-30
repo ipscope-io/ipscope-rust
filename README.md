@@ -36,7 +36,7 @@ use ipscope::{AsyncIpScopeClient, RequestOptions};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = AsyncIpScopeClient::new("ips_live_your_api_key_here")?;
+    let client = AsyncIpScopeClient::new("<public>:<private>")?;
 
     // 1. Single IPv4 or IPv6 lookup (cached in LRU cache & singleflight-coalesced)
     let ip_info = client.lookup_ip("8.8.8.8").await?;
@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 use ipscope::{IpScopeClient, RequestOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = IpScopeClient::new("ips_live_your_api_key_here")?;
+    let client = IpScopeClient::new("<public>:<private>")?;
 
     let ip_info = client.lookup_ip("1.1.1.1")?;
     println!("{} -> {:?}", ip_info.ip, ip_info.network.organization);
