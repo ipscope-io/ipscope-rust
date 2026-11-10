@@ -28,3 +28,6 @@ jobs:
 
       - name: Run cargo test
         run: cargo test --all-targets -- --nocapture
+
+      - name: Compile README examples (doctests)
+        run: cargo test --doc

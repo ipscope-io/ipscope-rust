@@ -415,6 +415,7 @@ impl AsyncIpScopeClient {
             validate_ip_address(&target)?;
         }
         feedback.prefix_or_ip = target;
+        feedback.evidence_url = feedback.effective_evidence_url();
 
         let resp = self
             .transport
@@ -712,6 +713,7 @@ impl IpScopeClient {
             validate_ip_address(&target)?;
         }
         feedback.prefix_or_ip = target;
+        feedback.evidence_url = feedback.effective_evidence_url();
 
         let resp = self.transport.request::<FeedbackSubmissionResponse, _>(
             Method::POST,

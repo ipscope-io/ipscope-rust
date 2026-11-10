@@ -7,6 +7,11 @@
 
 #![forbid(unsafe_code)]
 
+/// Compiles every README example as a doctest so published docs stay in sync with the API.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
+
 pub mod cache;
 pub mod client;
 pub mod error;
@@ -22,7 +27,8 @@ pub use types::{
     DatasetSnapshotSummary, DatasetsMetadataResponse, FeedbackSubmissionInput,
     FeedbackSubmissionResponse, GeoBlock, IpLookupResponse, IpScopeResultWithMeta, NetworkBlock,
     NetworkPrefixLookupResponse, RateLimitMetadata, RequestOptions, RetryOptions, SecurityBlock,
-    SecurityExtensionsBlock, ServiceSnapshotInfo, ServiceStatusResponse,
+    SecurityExtensionsBlock, ServiceSnapshotInfo, ServiceStatusResponse, FEEDBACK_ISSUE_TYPES,
+    FEEDBACK_ROLES,
 };
 pub use validation::{
     validate_and_deduplicate_batch_ips, validate_api_key, validate_cidr_prefix,

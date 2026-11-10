@@ -19,7 +19,7 @@ pub const DEFAULT_BASE_URL: &str = "https://api.ipscope.io";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Hard 2 MiB response body ceiling to protect Rust heap memory.
 pub const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
-pub const SDK_USER_AGENT: &str = "ipscope-rust/1.0.0";
+pub const SDK_USER_AGENT: &str = concat!("ipscope-rust/", env!("CARGO_PKG_VERSION"));
 
 pub(crate) struct TransportResponse<T> {
     pub data: T,
@@ -531,6 +531,7 @@ fn parse_rate_limit_headers(headers: &HeaderMap) -> RateLimitMetadata {
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.trim().parse().ok())
     };
+    // X-RateLimit-Reset is the number of seconds until the window resets (not an epoch).
     let parse_u64 = |name: &str| -> Option<u64> {
         headers
             .get(name)
@@ -545,14 +546,12 @@ fn parse_rate_limit_headers(headers: &HeaderMap) -> RateLimitMetadata {
             .filter(|s| !s.is_empty())
     };
 
-    RateLimitMetadata {
-        limit_per_minute: parse_u32("x-ratelimit-limit"),
-        remaining: parse_u32("x-ratelimit-remaining"),
-        reset_epoch_seconds: parse_u64("x-ratelimit-reset"),
-        scope: parse_str("x-ratelimit-scope"),
-        burst_capacity: parse_u32("x-ratelimit-burst"),
-        rate_limit_rps: parse_u32("x-ratelimit-rps"),
-    }
+    RateLimitMetadata::new(
+        parse_u32("x-ratelimit-limit"),
+        parse_u32("x-ratelimit-remaining"),
+        parse_u64("x-ratelimit-reset"),
+        parse_str("x-ratelimit-scope"),
+    )
 }
 
 fn extract_error_message(body_bytes: &[u8], status: u16, path: &str) -> String {
@@ -584,14 +583,9 @@ fn compute_retry_after(headers: &HeaderMap, rl: &RateLimitMetadata) -> Option<Du
             }
         }
     }
-    if let Some(reset_epoch) = rl.reset_epoch_seconds {
-        if let Ok(now_dur) = SystemTime::now().duration_since(UNIX_EPOCH) {
-            if reset_epoch > now_dur.as_secs() {
-                return Some(Duration::from_secs(reset_epoch - now_dur.as_secs()));
-            }
-        }
-    }
-    None
+    rl.reset_after_seconds
+        .filter(|secs| *secs > 0)
+        .map(Duration::from_secs)
 }
 
 fn compute_backoff(attempt: usize, retry: &RetryOptions) -> Duration {

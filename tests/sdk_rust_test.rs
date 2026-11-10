@@ -1,7 +1,9 @@
 use ipscope::{
     validate_and_deduplicate_batch_ips, validate_api_key, validate_cidr_prefix,
-    validate_ip_address, AsyncIpScopeClient, CacheOptions, FeedbackSubmissionInput, IpScopeClient,
-    IpScopeError, RequestOptions, RetryOptions, MAX_RESPONSE_BYTES,
+    validate_ip_address, AsyncIpScopeClient, CacheOptions, FeedbackSubmissionInput,
+    FeedbackSubmissionResponse, IpLookupResponse, IpScopeClient, IpScopeError,
+    NetworkPrefixLookupResponse, RequestOptions, RetryOptions, FEEDBACK_ISSUE_TYPES,
+    FEEDBACK_ROLES, MAX_RESPONSE_BYTES, SDK_USER_AGENT,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -27,6 +29,9 @@ fn make_mock_ip_record(ip: &str) -> serde_json::Value {
             "country_code": "US",
             "subdivision": "California",
             "city": "Mountain View",
+            "postal_code": "94043",
+            "latitude": 37.422,
+            "longitude": -122.085,
             "timezone": "America/Los_Angeles",
             "location_type": "anycast",
             "confidence": 0.96,
@@ -44,6 +49,7 @@ fn make_mock_ip_record(ip: &str) -> serde_json::Value {
             "is_hosting": true,
             "is_tor_exit": false,
             "is_proxy": false,
+            "is_relay": false,
             "anonymizer_type": "none",
             "confidence": 0.99,
             "reason_codes": ["ASN_HOSTING"]
@@ -56,7 +62,7 @@ fn make_mock_ip_record(ip: &str) -> serde_json::Value {
             "is_hosting": true
         },
         "security_extensions": {
-            "abuse_velocity_score": 0.02,
+            "abuse_velocity_score": 80,
             "is_known_scanner": false,
             "observation_recency_hours": 1.5
         },
@@ -136,7 +142,7 @@ where
                 };
 
                 let mut resp_head = format!(
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nX-RateLimit-Limit: 1000\r\nX-RateLimit-Remaining: 998\r\nX-RateLimit-Reset: 1761350400\r\nX-RateLimit-Scope: user\r\nX-RateLimit-Burst: 100\r\nX-RateLimit-RPS: 50\r\n",
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nX-RateLimit-Limit: 1000\r\nX-RateLimit-Remaining: 998\r\nX-RateLimit-Reset: 42\r\nX-RateLimit-Scope: user\r\n",
                     resp_body.len()
                 );
                 for (k, v) in extra_headers {
@@ -193,8 +199,11 @@ async fn test_async_singleflight_batch_and_endpoints() {
     let single_hits = Arc::new(AtomicUsize::new(0));
     let sent_batches: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
 
+    let feedback_bodies: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+
     let hits_clone = Arc::clone(&single_hits);
     let batches_clone = Arc::clone(&sent_batches);
+    let feedback_bodies_clone = Arc::clone(&feedback_bodies);
 
     let base_url = spawn_mock_http_server(move |_method, path, body| {
         if path == "/v1/ip/8.8.8.8" {
@@ -234,15 +243,42 @@ async fn test_async_singleflight_batch_and_endpoints() {
                 vec![],
                 serde_json::to_vec(&json!({
                     "queried_cidr": "8.8.8.0/24",
+                    "matched_network": "8.8.8.0/24",
                     "family": 4,
+                    "bgp_prefix_length": 24,
                     "dataset_version": "2026.10.25-001",
                     "record": {
-                        "prefix": "8.8.8.0/24",
                         "family": 4,
+                        "prefix": "8.8.8.0/24",
                         "asn": 15169,
                         "organization": "Google LLC",
-                        "country_code": "US"
-                    }
+                        "locations": {},
+                        "countryCode": "US",
+                        "subdivision": "California",
+                        "city": "Mountain View",
+                        "postalCode": "94043",
+                        "latitude": 37.422,
+                        "longitude": -122.085,
+                        "timezone": "America/Los_Angeles",
+                        "locationType": "declared",
+                        "geoConfidence": 0.85,
+                        "accuracyRadiusKm": 300,
+                        "isVirtualLocation": null,
+                        "connectionType": "hosting",
+                        "isHosting": true,
+                        "isVpn": false,
+                        "isTorExit": false,
+                        "isProxy": false,
+                        "anonymizerType": "none",
+                        "securityConfidence": 0.85,
+                        "abuseVelocityScore": 80,
+                        "isKnownScanner": false,
+                        "reasonCodes": ["KNOWN_HOSTING_INFRASTRUCTURE_RANGE"],
+                        "sourceIds": ["bgp"],
+                        "licensePolicyIds": ["cc0"],
+                        "updatedAt": "2026-11-10T03:02:07.437Z"
+                    },
+                    "lookup": make_mock_ip_record("8.8.8.0")
                 }))
                 .unwrap(),
             );
@@ -274,20 +310,14 @@ async fn test_async_singleflight_batch_and_endpoints() {
             );
         }
         if path == "/v1/feedback" {
-            return (
-                201,
-                vec![],
-                serde_json::to_vec(&json!({
-                    "id": "fb_rust_999",
-                    "prefix_or_ip": "8.8.8.8",
-                    "role": "network_operator",
-                    "issue_type": "wrong_country",
-                    "requested_correction": {"country_code": "US"},
-                    "created_at": "2026-10-25T10:00:00Z",
-                    "status": "pending_review"
-                }))
-                .unwrap(),
-            );
+            let mut parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            feedback_bodies_clone.lock().unwrap().push(parsed.clone());
+            // Echo the payload the way the API does: dto spread + id, camelCase createdAt, status.
+            let obj = parsed.as_object_mut().unwrap();
+            obj.insert("id".to_string(), json!("fb_rust_999"));
+            obj.insert("createdAt".to_string(), json!("2026-10-25T10:00:00Z"));
+            obj.insert("status".to_string(), json!("pending_review"));
+            return (201, vec![], serde_json::to_vec(&parsed).unwrap());
         }
         if path == "/v1/status" {
             return (
@@ -325,7 +355,30 @@ async fn test_async_singleflight_batch_and_endpoints() {
     }
     assert_eq!(single_hits.load(Ordering::SeqCst), 1);
     assert!(client.get_cache_stats().coalesced_in_flight_hits > 0);
-    assert_eq!(client.get_last_rate_limit().unwrap().remaining, Some(998));
+    let rl = client.get_last_rate_limit().unwrap();
+    assert_eq!(rl.limit_per_minute, Some(1000));
+    assert_eq!(rl.remaining, Some(998));
+    assert_eq!(rl.reset_after_seconds, Some(42));
+    assert_eq!(rl.scope.as_deref(), Some("user"));
+    #[allow(deprecated)]
+    {
+        assert_eq!(rl.reset_epoch_seconds, Some(42));
+        assert_eq!(rl.burst_capacity, None);
+        assert_eq!(rl.rate_limit_rps, None);
+    }
+
+    let one = client.lookup_ip("8.8.8.8").await.unwrap();
+    assert_eq!(one.geo.latitude, Some(37.422));
+    assert_eq!(one.geo.longitude, Some(-122.085));
+    assert_eq!(one.geo.postal_code.as_deref(), Some("94043"));
+    assert_eq!(one.security.is_relay, Some(false));
+    assert_eq!(
+        one.security_extensions
+            .as_ref()
+            .unwrap()
+            .abuse_velocity_score,
+        Some(80.0)
+    );
 
     // 2. Batch deduplication & cache reuse
     let batch = client
@@ -349,7 +402,31 @@ async fn test_async_singleflight_batch_and_endpoints() {
     // 4. Network, Caller IP, Datasets, Feedback, Status
     let net = client.lookup_network("8.8.8.0/24").await.unwrap();
     assert_eq!(net.queried_cidr, "8.8.8.0/24");
-    assert_eq!(net.record.unwrap().asn, Some(15169));
+    assert_eq!(net.matched_network.as_deref(), Some("8.8.8.0/24"));
+    assert_eq!(net.bgp_prefix_length, Some(24));
+    assert_eq!(net.lookup.as_ref().unwrap().ip, "8.8.8.0");
+    assert_eq!(net.lookup.as_ref().unwrap().geo.latitude, Some(37.422));
+    let record = net.record.unwrap();
+    assert_eq!(record.asn, Some(15169));
+    assert_eq!(record.country_code.as_deref(), Some("US"));
+    assert_eq!(record.postal_code.as_deref(), Some("94043"));
+    assert_eq!(record.latitude, Some(37.422));
+    assert_eq!(record.location_type.as_deref(), Some("declared"));
+    assert_eq!(record.geo_confidence, Some(0.85));
+    assert_eq!(record.accuracy_radius_km, Some(300.0));
+    assert_eq!(record.connection_type.as_deref(), Some("hosting"));
+    assert_eq!(record.is_hosting, Some(true));
+    assert_eq!(record.is_vpn, Some(false));
+    assert_eq!(record.anonymizer_type.as_deref(), Some("none"));
+    assert_eq!(record.abuse_velocity_score, Some(80.0));
+    assert_eq!(
+        record.reason_codes,
+        vec!["KNOWN_HOSTING_INFRASTRUCTURE_RANGE"]
+    );
+    assert_eq!(
+        record.updated_at.as_deref(),
+        Some("2026-11-10T03:02:07.437Z")
+    );
 
     let caller = client.lookup_caller_ip().await.unwrap();
     assert_eq!(caller.ip, "203.0.113.42");
@@ -360,16 +437,49 @@ async fn test_async_singleflight_batch_and_endpoints() {
     let mut corr = HashMap::new();
     corr.insert("country_code".to_string(), json!("US"));
     let fb = client
-        .submit_feedback(FeedbackSubmissionInput {
-            prefix_or_ip: "8.8.8.8".to_string(),
-            role: "network_operator".to_string(),
-            issue_type: "wrong_country".to_string(),
-            requested_correction: corr,
-            evidence_urls: None,
-        })
+        .submit_feedback(
+            FeedbackSubmissionInput::new("8.8.8.8", "network_owner", "wrong_country", corr.clone())
+                .with_evidence_url("https://example.net/geofeed.csv")
+                .with_contact("noc@example.net", true),
+        )
         .await
         .unwrap();
     assert_eq!(fb.id, "fb_rust_999");
+    assert_eq!(fb.created_at, "2026-10-25T10:00:00Z");
+    assert_eq!(fb.role, "network_owner");
+    assert_eq!(
+        fb.evidence_url.as_deref(),
+        Some("https://example.net/geofeed.csv")
+    );
+    assert_eq!(fb.contact_consent, Some(true));
+    assert_eq!(fb.contact_email.as_deref(), Some("noc@example.net"));
+    {
+        let bodies = feedback_bodies.lock().unwrap();
+        let sent = &bodies[0];
+        assert_eq!(
+            sent["evidence_url"],
+            json!("https://example.net/geofeed.csv")
+        );
+        assert_eq!(sent["contact_consent"], json!(true));
+        assert_eq!(sent["contact_email"], json!("noc@example.net"));
+        assert!(sent.get("evidence_urls").is_none());
+    }
+
+    // Deprecated `evidence_urls` still works: first entry is sent as `evidence_url`.
+    #[allow(deprecated)]
+    let legacy = FeedbackSubmissionInput {
+        evidence_urls: Some(vec!["https://example.net/rdap".to_string()]),
+        ..FeedbackSubmissionInput::new("8.8.8.0/24", "researcher", "other", corr)
+    };
+    client.submit_feedback(legacy).await.unwrap();
+    {
+        let bodies = feedback_bodies.lock().unwrap();
+        let sent = &bodies[1];
+        assert_eq!(sent["evidence_url"], json!("https://example.net/rdap"));
+        assert!(sent.get("evidence_urls").is_none());
+        assert!(sent.get("contact_email").is_none());
+        assert!(sent.get("contact_consent").is_none());
+    }
 
     let status = client.get_status().await.unwrap();
     assert_eq!(status.status, "ok");
@@ -482,4 +592,65 @@ fn test_sync_client_retries_errors_and_memory_bounds() {
         field: "ip",
         message: "check".to_string(),
     };
+}
+
+#[test]
+fn test_wire_compatibility_of_new_fields() {
+    // abuse_velocity_score: integer 0-100 (new) and legacy fraction both parse.
+    let mut rec = make_mock_ip_record("146.75.164.1");
+    rec["security_extensions"]["abuse_velocity_score"] = json!(0.14);
+    let parsed: IpLookupResponse = serde_json::from_value(rec.clone()).unwrap();
+    assert_eq!(
+        parsed.security_extensions.unwrap().abuse_velocity_score,
+        Some(0.14)
+    );
+    rec["security_extensions"]["abuse_velocity_score"] = json!(null);
+    let parsed: IpLookupResponse = serde_json::from_value(rec.clone()).unwrap();
+    assert_eq!(
+        parsed.security_extensions.unwrap().abuse_velocity_score,
+        None
+    );
+
+    // Older payloads without the new optional fields still parse.
+    let geo = rec["geo"].as_object_mut().unwrap();
+    geo.remove("latitude");
+    geo.remove("longitude");
+    geo.remove("postal_code");
+    rec["security"].as_object_mut().unwrap().remove("is_relay");
+    let parsed: IpLookupResponse = serde_json::from_value(rec).unwrap();
+    assert_eq!(parsed.geo.latitude, None);
+    assert_eq!(parsed.security.is_relay, None);
+
+    // Feedback response accepts snake_case created_at too.
+    let fb: FeedbackSubmissionResponse = serde_json::from_value(json!({
+        "id": "fb_1",
+        "prefix_or_ip": "8.8.8.8",
+        "role": "user",
+        "issue_type": "wrong_city",
+        "requested_correction": {},
+        "created_at": "2026-10-25T10:00:00Z",
+        "status": "pending_review"
+    }))
+    .unwrap();
+    assert_eq!(fb.created_at, "2026-10-25T10:00:00Z");
+
+    // Network record still accepts snake_case keys, and a null record.
+    let net: NetworkPrefixLookupResponse = serde_json::from_value(json!({
+        "queried_cidr": "10.0.0.0/8",
+        "family": 4,
+        "dataset_version": "v",
+        "record": {"prefix": "10.0.0.0/8", "family": 4, "asn": null, "organization": null,
+                   "country_code": "ZZ", "city": null, "is_vpn": false}
+    }))
+    .unwrap();
+    assert_eq!(
+        net.record.as_ref().unwrap().country_code.as_deref(),
+        Some("ZZ")
+    );
+    assert_eq!(net.matched_network, None);
+    assert!(net.lookup.is_none());
+
+    assert!(FEEDBACK_ROLES.contains(&"network_owner"));
+    assert!(FEEDBACK_ISSUE_TYPES.contains(&"virtual_location_mismatch"));
+    assert_eq!(SDK_USER_AGENT, "ipscope-rust/1.1.0");
 }

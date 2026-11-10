@@ -1,6 +1,6 @@
 [package]
 name = "ipscope"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Official, memory-safe Sync & Async Rust Server-Side SDK for the IPScope IP Intelligence Platform."
